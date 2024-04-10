@@ -16,6 +16,9 @@ from peft.utils.other import _get_submodules
 from ..modeling._base import BaseGPTQForCausalLM
 
 
+group_size = 32  # quantization group_size
+
+
 class GPTQLoraConfig(LoraConfig):
     injected_fused_attention: bool = False
     injected_fused_mlp: bool = False
@@ -35,7 +38,7 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
         init_lora_weights = kwargs.pop("init_lora_weights", True)
 
         torch.nn.Linear.__init__(self, linear_module.in_features, linear_module.out_features)
-        LoraLayer.__init__(self, linear_module.in_features, linear_module.out_features)
+        LoraLayer.__init__(self, linear_module.in_features//group_size, linear_module.out_features)
 
         self.linear_module = linear_module
 
@@ -48,6 +51,8 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
 
         self.update_layer(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
         self.active_adapter = adapter_name
+        self.qa_pool = torch.nn.AvgPool1d(group_size)  # using pooling layer to conduct sum operation
+        self.ssf = torch.nn.Parameter(torch.ones(linear_module.out_features))
 
     def reset_lora_parameters(self, adapter_name):
         if adapter_name in self.lora_A.keys():
@@ -69,7 +74,7 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
                 self.unmerge()
             result = self.linear_module(x)
         elif self.r[self.active_adapter] > 0 and not self.merged:
-            result = self.linear_module(x)
+            result = self.ssf*self.linear_module(x)
 
             lora_B = self.lora_B[self.active_adapter]
             lora_A = self.lora_A[self.active_adapter]
@@ -77,7 +82,7 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
             scale = self.scaling[self.active_adapter]
 
             x = x.type_as(lora_A.weight.data)
-            adapter_result = (lora_B(lora_A(lora_dropout(x))) * scale).type_as(result)
+            adapter_result = (lora_B(lora_A(lora_dropout(self.qa_pool(x)))) * scale).type_as(result)
             result += adapter_result
         else:
             result = self.linear_module(x)
@@ -402,7 +407,7 @@ def get_gptq_peft_model(
     with hijack_peft_mappings():
         try:
             if train_mode:
-                peft_model = get_peft_model(model.model, peft_config)
+                peft_model = get_peft_model(model.model, peft_config, adapter_name=adapter_name)
             else:
                 peft_model = PeftModel.from_pretrained(model.model, model_id, adapter_name)
         except:

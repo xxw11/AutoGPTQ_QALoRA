@@ -46,7 +46,7 @@ class QuantLinear(nn.Module):
         )
         self.register_buffer(
             'qzeros',
-            torch.zeros((math.ceil(infeatures / self.group_size), outfeatures // 32 * self.bits), dtype=torch.int32)
+            torch.zeros((math.ceil(infeatures / self.group_size), outfeatures), dtype=torch.float16)
         )
         self.register_buffer(
             'scales',
@@ -97,8 +97,9 @@ class QuantLinear(nn.Module):
 
         scales = scales.t().contiguous()
         zeros = zeros.t().contiguous()
-        scale_zeros = zeros * scales
+        # scale_zeros = zeros * scales
         self.scales = scales.clone().half()
+        self.qzeros = zeros.clone().half()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
 
@@ -107,7 +108,7 @@ class QuantLinear(nn.Module):
             g_idx = idx // self.group_size
             intweight.append(
                 torch.round(
-                    (W[:, idx] + scale_zeros[g_idx]) / self.scales[g_idx]
+                    (W[:, idx] - self.qzeros[g_idx]) / self.scales[g_idx]
                 ).to(torch.int)[:, None]
             )
         intweight = torch.cat(intweight, dim=1)
@@ -150,41 +151,41 @@ class QuantLinear(nn.Module):
         qweight = qweight.astype(np.int32)
         self.qweight = torch.from_numpy(qweight)
 
-        zeros -= 1
-        zeros = zeros.numpy().astype(np.uint32)
-        qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
-        i = 0
-        col = 0
-        while col < qzeros.shape[1]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                col += 1
-            elif self.bits == 3:
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i))
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 30
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 2) & 1
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 1)
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 31
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 2)
-                i += 10
-                col += 1
-            else:
-                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+        # zeros -= 1
+        # zeros = zeros.numpy().astype(np.uint32)
+        # qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
+        # i = 0
+        # col = 0
+        # while col < qzeros.shape[1]:
+        #     if self.bits in [2, 4, 8]:
+        #         for j in range(i, i + (32 // self.bits)):
+        #             qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
+        #         i += 32 // self.bits
+        #         col += 1
+        #     elif self.bits == 3:
+        #         for j in range(i, i + 10):
+        #             qzeros[:, col] |= zeros[:, j] << (3 * (j - i))
+        #         i += 10
+        #         qzeros[:, col] |= zeros[:, i] << 30
+        #         col += 1
+        #         qzeros[:, col] |= (zeros[:, i] >> 2) & 1
+        #         i += 1
+        #         for j in range(i, i + 10):
+        #             qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 1)
+        #         i += 10
+        #         qzeros[:, col] |= zeros[:, i] << 31
+        #         col += 1
+        #         qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
+        #         i += 1
+        #         for j in range(i, i + 10):
+        #             qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 2)
+        #         i += 10
+        #         col += 1
+        #     else:
+        #         raise NotImplementedError("Only 2,3,4,8 bits are supported.")
 
-        qzeros = qzeros.astype(np.int32)
-        self.qzeros = torch.from_numpy(qzeros)
+        # qzeros = qzeros.astype(np.int32)
+        # self.qzeros = torch.from_numpy(qzeros)
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
@@ -221,11 +222,14 @@ class QuantLinear(nn.Module):
                self.wf = self.wf.to(self.qzeros.device)
                 
             if self.bits in [2,4,8]:
-               zeros = torch.bitwise_right_shift(torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits), self.wf.unsqueeze(0)).to(torch.int16 if self.bits == 8 else torch.int8)
-               torch.bitwise_and(zeros, (2 ** self.bits) - 1, out=zeros)
+            #    zeros = torch.bitwise_right_shift(torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits), self.wf.unsqueeze(0)).to(torch.int16 if self.bits == 8 else torch.int8)
+            #    torch.bitwise_and(zeros, (2 ** self.bits) - 1, out=zeros)
                    
-               zeros = zeros + 1
-               zeros = zeros.reshape(-1, 1, zeros.shape[1] * zeros.shape[2])
+            #    zeros = zeros + 1
+            #    zeros = zeros.reshape(-1, 1, zeros.shape[1] * zeros.shape[2])
+           
+               zeros = self.qzeros
+               zeros = zeros.reshape(-1, 1, zeros.shape[-1])
    
                scales = self.scales
                scales = scales.reshape(-1, 1, scales.shape[-1])
@@ -234,16 +238,18 @@ class QuantLinear(nn.Module):
                torch.bitwise_and(weight,(2 ** self.bits) - 1, out=weight)
                weight = weight.reshape(-1, self.group_size, weight.shape[2])
             elif self.bits == 3:
-               zeros = self.qzeros.reshape(self.qzeros.shape[0], self.qzeros.shape[1]//3, 3, 1).expand(-1, -1, -1, 12)
-               zeros = (zeros >> self.wf.unsqueeze(0))
-               zeros[:,:,0,10] = (zeros[:,:,0,10]&0x3) | ((zeros[:,:,1,0] << 2)&0x4)
-               zeros[:,:,1,11] = (zeros[:,:,1,11]&0x1) | ((zeros[:,:,2,0] << 1)&0x6)
-               zeros = zeros & 0x7
-               zeros = torch.cat([zeros[:,:,0,:11], zeros[:,:,1,1:12], zeros[:,:,2,1:11]], dim=2)
+            #    zeros = self.qzeros.reshape(self.qzeros.shape[0], self.qzeros.shape[1]//3, 3, 1).expand(-1, -1, -1, 12)
+            #    zeros = (zeros >> self.wf.unsqueeze(0))
+            #    zeros[:,:,0,10] = (zeros[:,:,0,10]&0x3) | ((zeros[:,:,1,0] << 2)&0x4)
+            #    zeros[:,:,1,11] = (zeros[:,:,1,11]&0x1) | ((zeros[:,:,2,0] << 1)&0x6)
+            #    zeros = zeros & 0x7
+            #    zeros = torch.cat([zeros[:,:,0,:11], zeros[:,:,1,1:12], zeros[:,:,2,1:11]], dim=2)
                 
-               zeros = zeros + 1
-               zeros = zeros.reshape(-1, 1, zeros.shape[1] * zeros.shape[2]) 
-               
+            #    zeros = zeros + 1
+            #    zeros = zeros.reshape(-1, 1, zeros.shape[1] * zeros.shape[2]) 
+               zeros = self.qzeros
+               zeros = zeros.reshape(-1, 1, zeros.shape[-1])
+
                scales = self.scales
                scales = scales.reshape(-1, 1, scales.shape[-1])
                 
@@ -256,7 +262,7 @@ class QuantLinear(nn.Module):
                weight = weight.reshape(-1, self.group_size, weight.shape[2])
             else:
                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
-            weight = (scales * (weight - zeros))
+            weight = scales * weight + zeros
             weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
 
             out = torch.matmul(x.half(), weight)

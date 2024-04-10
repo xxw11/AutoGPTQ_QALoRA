@@ -11,7 +11,7 @@ def quantize(x, scale, zero, maxq):
     if maxq < 0:
         return (x > scale / 2).float() * scale + (x < zero / 2).float() * zero
     q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
-    return scale * (q - zero)
+    return scale * q + zero
 
 
 class Quantizer(nn.Module):
@@ -79,7 +79,7 @@ class Quantizer(nn.Module):
             if self.sym:
                 self.zero = torch.full_like(self.scale, (self.maxq + 1) / 2)
             else:
-                self.zero = torch.round(-xmin / self.scale)
+                self.zero = xmin
 
         if self.mse:
             best = torch.full([x.shape[0]], float('inf'), device=dev)
@@ -88,7 +88,7 @@ class Quantizer(nn.Module):
                 xmin1 = p * xmin
                 xmax1 = p * xmax
                 scale1 = (xmax1 - xmin1) / self.maxq
-                zero1 = torch.round(-xmin1 / scale1) if not self.sym else self.zero
+                zero1 = xmin if not self.sym else self.zero
                 q = quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), self.maxq)
                 q -= x
                 q.abs_()
