@@ -52,7 +52,6 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
         self.update_layer(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
         self.active_adapter = adapter_name
         self.qa_pool = torch.nn.AvgPool1d(group_size)  # using pooling layer to conduct sum operation
-        self.ssf = torch.nn.Parameter(torch.ones(linear_module.out_features))
 
     def reset_lora_parameters(self, adapter_name):
         if adapter_name in self.lora_A.keys():
@@ -74,7 +73,7 @@ class GPTQLoraLinear(torch.nn.Linear, LoraLayer):
                 self.unmerge()
             result = self.linear_module(x)
         elif self.r[self.active_adapter] > 0 and not self.merged:
-            result = self.ssf*self.linear_module(x)
+            result = self.linear_module(x)
 
             lora_B = self.lora_B[self.active_adapter]
             lora_A = self.lora_A[self.active_adapter]
